@@ -31,6 +31,10 @@ type Strategy interface {
 	OnTick(tick TickData)
 	OnBar(bar BarData)
 	OnStop()
+
+	OnPosition(posChange float64)
+	OnOrder(order OrderData)
+	OnTrade(trade TradeData)
 }
 
 type StrategyConfig struct {
