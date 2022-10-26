@@ -7,7 +7,7 @@ import (
 
 func main() {
 	err := internal.Evaluate(internal.EngineCfg{
-		Strategy:       Strategy{},
+		Strategy:       internal.StrategyTemplate{},
 		DataRepo:       internal.NewData(),
 		Symbol:         "BTCUSDT",
 		Start:          time.Date(2022, 1, 1, 0, 0, 0, 0, time.Local),
