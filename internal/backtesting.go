@@ -75,6 +75,9 @@ func (c EngineCfg) Check() error {
 	if c.DataRepo == nil {
 		return errors.New("dataRepo不能为空")
 	}
+	if c.Start.IsZero() {
+		return errors.New("start不能为空")
+	}
 
 	return nil
 }
@@ -135,6 +138,11 @@ func (b *BackTestingEngine) runBackTesting() {
 	b.Strategy.OnStart()
 	b.logger.Println("开始回放历史数据")
 
+	if b.historyData.Len() <= 1 {
+		b.logger.Println("历史数据不足，回测终止")
+		return
+	}
+
 	// todo 没有回放进度的功能
 	for cur := b.historyData.Front(); cur.Next() != nil; cur = cur.Next() {
 		if b.BackTestingMod == BAR {
@@ -167,21 +175,26 @@ func (b *BackTestingEngine) loadData() error {
 
 	totalDays := int(b.End.Sub(b.Start).Hours() / 24)
 	progressDays := Max(totalDays/10, 1)
-	progressDelta := time.Duration(progressDays * 24)
+	progressDelta := time.Hour * time.Duration(progressDays*24)
 	intervalDelta := b.Interval
 
 	start := b.Start
-	end := b.End.Add(progressDelta)
+	end := b.Start.Add(progressDelta)
 	progress := 0
 
-	var howToLoad func(string, Exchange, time.Duration, time.Time, time.Time) (*list.List, error)
+	var howToLoad LoadFunc
 	if b.BackTestingMod == BAR {
 		howToLoad = b.DataRepo.GetBarData
 	} else {
 		howToLoad = b.DataRepo.GetTickData
 	}
 
-	for start.Before(end) {
+	for start.Before(b.End) {
+		// 确保时间范围
+		if end.After(b.End) {
+			end = b.End
+		}
+
 		loaded, err := howToLoad(b.Symbol, b.Exchange, b.Interval, start, end)
 		if err != nil {
 			return err
