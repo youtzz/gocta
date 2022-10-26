@@ -21,6 +21,8 @@ func NewData() DataRepo {
 	return &Data{db}
 }
 
+type LoadFunc func(string, Exchange, time.Duration, time.Time, time.Time) (*list.List, error)
+
 func (d *Data) GetBarData(symbol string, _ Exchange, interval time.Duration, start, end time.Time) (*list.List, error) {
 	var raw []dbBarData
 	err := d.db.Raw("select * from bars_btcusdt_1d where datetime between ? and ?;", start, end).Scan(&raw).Error
