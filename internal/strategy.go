@@ -1,39 +1,39 @@
 package internal
 
 import (
-	"fmt"
+	"log"
 )
 
 type StrategyTemplate struct{}
 
 func (s StrategyTemplate) OnInit() {
-	fmt.Println("Strategy: OnInit")
+	log.Println("Strategy: OnInit")
 }
 
 func (s StrategyTemplate) OnStart() {
-	fmt.Println("Strategy: OnStart")
+	log.Println("Strategy: OnStart")
 }
 
 func (s StrategyTemplate) OnTick(tick TickData) {
-	fmt.Println("Strategy: OnTick")
+	log.Println("Strategy: OnTick")
 }
 
 func (s StrategyTemplate) OnBar(bar BarData) {
-	fmt.Printf("Strategy: OnBar: %+v\n", bar)
+	log.Printf("Strategy: OnBar: %+v\n", bar)
 }
 
 func (s StrategyTemplate) OnStop() {
-	fmt.Println("Strategy: OnStop")
+	log.Println("Strategy: OnStop")
 }
 
 func (s StrategyTemplate) OnPosition(posChange float64) {
-	fmt.Printf("Strategy: OnPosition: changed: %d\n", posChange)
+	log.Printf("Strategy: OnPosition: changed: %d\n", posChange)
 }
 
 func (s StrategyTemplate) OnOrder(order OrderData) {
-	fmt.Printf("Strategy: OnOrder: %+v\n", order)
+	log.Printf("Strategy: OnOrder: %+v\n", order)
 }
 
 func (s StrategyTemplate) OnTrade(trade TradeData) {
-	fmt.Printf("Strategy: OnTrade: %+v\n", trade)
+	log.Printf("Strategy: OnTrade: %+v\n", trade)
 }
