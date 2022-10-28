@@ -59,8 +59,8 @@ type DailyResult struct {
 	NetPnl     float64
 }
 
-func NewDailyResult() *DailyResult {
-	return &DailyResult{Trades: make([]*TradeData, 0)}
+func NewDailyResult(date string, price float64) *DailyResult {
+	return &DailyResult{Date: date, ClosePrice: price, Trades: make([]*TradeData, 0)}
 }
 
 func (d *DailyResult) AddTrade(trade *TradeData) {

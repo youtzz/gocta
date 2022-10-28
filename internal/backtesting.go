@@ -19,7 +19,7 @@ import (
 func Evaluate(cfg EngineCfg) error {
 	engine, err := newEngine(cfg)
 	if err != nil {
-		engine.logger.Println("创建引擎失败:", err.Error())
+		log.Println("创建引擎失败:", err.Error())
 		return err
 	}
 
@@ -31,7 +31,7 @@ func Evaluate(cfg EngineCfg) error {
 
 	engine.runBackTesting()
 	engine.calculateResult()
-	engine.calculateStatistics(false)
+	engine.calculateStatistics()
 
 	return nil
 }
@@ -156,10 +156,6 @@ func (b *BackTestingEngine) runBackTesting() {
 	b.logger.Println("历史数据回放结束")
 }
 
-func (b *BackTestingEngine) clear() {
-
-}
-
 func (b *BackTestingEngine) loadData() error {
 	b.logger.Println("开始加载历史数据")
 
@@ -213,6 +209,15 @@ func (b *BackTestingEngine) loadData() error {
 	return nil
 }
 
+func (b *BackTestingEngine) updateDailyClose(price float64) {
+	date := b.datetime.Format("2006-01-01")
+	if result, ok := b.dailyResults[date]; ok {
+		result.ClosePrice = price
+	} else {
+		b.dailyResults[date] = NewDailyResult(date, price)
+	}
+}
+
 func (b *BackTestingEngine) newBar(bar BarData) {
 	b.bar = bar
 	b.datetime = bar.UpdatedAt.AsTime()
@@ -220,10 +225,19 @@ func (b *BackTestingEngine) newBar(bar BarData) {
 	b.crossLimitOrder()
 	//b.crossStopOrder()
 	b.Strategy.OnBar(bar)
+
+	b.updateDailyClose(bar.ClosePrice)
 }
 
 func (b *BackTestingEngine) newTick(tick TickData) {
+	b.tick = tick
+	b.datetime = tick.UpdatedAt.AsTime()
 
+	b.crossLimitOrder()
+	//b.crossStopOrder()
+	b.Strategy.OnTick(tick)
+
+	b.updateDailyClose(tick.LastPrice)
 }
 
 func (b *BackTestingEngine) crossLimitOrder() {
@@ -302,7 +316,7 @@ func (b *BackTestingEngine) crossLimitOrder() {
 	}
 }
 
-func (b *BackTestingEngine) calculateResult(){
+func (b *BackTestingEngine) calculateResult() {
 	res := dataframe.New()
 	if len(b.trades) == 0 {
 		b.logger.Println("成交记录为空，无法计算")
@@ -319,7 +333,7 @@ func (b *BackTestingEngine) calculateResult(){
 	for _, dailyResult := range b.dailyResults {
 		dailyResult.CalculatePnl(preClose, startPos, b.Rate, b.Slippage, b.Size, b.Inverse)
 		preClose = dailyResult.ClosePrice
-		startPos = dailyResult.StartPos
+		startPos = dailyResult.EndPos
 	}
 	results := make([]*DailyResult, 0)
 	for k, v := range b.dailyResults {
@@ -331,142 +345,130 @@ func (b *BackTestingEngine) calculateResult(){
 	b.dailyDf = &res
 }
 
-func (b *BackTestingEngine) calculateStatistics(output bool) map[string]any {
-	var df *dataframe.DataFrame
+func (b *BackTestingEngine) calculateStatistics() map[string]any {
+	var (
+		startDate, endDate              string
+		totalDays, profitDays, lossDays int
+		endBalance                      float64
+		maxDrawdown, maxDdpercent       float64
+		maxDrawdownDuration             int
+
+		totalNetPnl, dailyNetPnl,
+		totalCommission, dailyCommission,
+		totalSlippage, dailySlippage,
+		totalTurnover, dailyTurnover,
+		totalTradeCount, dailyTradeCount,
+		totalReturn, annualReturn, dailyReturn, returnStd,
+		sharpeRatio, returnDrawdownRatio float64
+	)
+
 	b.logger.Println("开始计算策略统计指标")
-	startDate := ""
-	endDate := ""
-	totalDays := 0
-	profitDays := 0
-	lossDays := 0
-	endBalance := 0.0
-	maxDrawdown := 0.0
-	maxDdpercent := 0.0
-	maxDrawdownDuration := 0
-	totalNetPnl := 0.0
-	dailyNetPnl := 0.0
-	totalCommission := 0.0
-	dailyCommission := 0.0
-	totalSlippage := 0.0
-	dailySlippage := 0.0
-	totalTurnover := 0.0
-	dailyTurnover := 0.0
-	totalTradeCount := 0.0
-	dailyTradeCount := 0.0
-	totalReturn := 0.0
-	annualReturn := 0.0
-	dailyReturn := 0.0
-	returnStd := 0.0
-	sharpeRatio := 0.0
-	returnDrawdownRatio := 0.0
 
-	if df == nil {
-		df = b.dailyDf
+	if b.dailyDf != nil {
+		df := b.dailyDf
+		netPnlSeries := df.Col("NetPnl")
+		balanceSeries := utils.CumSumSeries(netPnlSeries, "Balance", b.Capital)
+		preBalanceSeries := utils.ShiftSeries(balanceSeries, 1, "PreBalance")
+		preBalanceSeries.Set(0, series.New(b.Capital, series.Float, "PreBalance"))
+
+		// TODO: Highlevel
+		balanceSeries.Rolling(1).Mean()
+
+		drawdownSeries := utils.SubSeries(balanceSeries, df.Col("Highlevel"), "Drawdown")
+		ddpercentSeries := utils.MutiSeries(utils.DivSeries(drawdownSeries, df.Col("Highlevel"), ""), 100, "ddpercent")
+		startDate = b.Start.Format("2006-01-02")
+		endDate = b.End.Format("2006-01-02")
+		totalDays = balanceSeries.Len()
+		profitDays = utils.GreaterSeries(netPnlSeries, 0)
+		lossDays = utils.LowerSeries(netPnlSeries, 0)
+
+		endBalance = balanceSeries.Float()[balanceSeries.Len()-1]
+		maxDrawdown = drawdownSeries.Min()
+		maxDdpercent = ddpercentSeries.Min()
+
+		totalNetPnl = netPnlSeries.Sum()
+		dailyNetPnl = totalNetPnl / float64(totalDays)
+
+		totalCommission = df.Col("Commission").Sum()
+		dailyCommission = totalCommission / float64(totalDays)
+
+		totalSlippage = df.Col("Slippage").Sum()
+		dailySlippage = totalSlippage / float64(totalDays)
+
+		totalTurnover = df.Col("Turnover").Sum()
+		dailyTurnover = totalTurnover / float64(totalDays)
+
+		totalTradeCount = df.Col("TradeCount").Sum()
+		dailyTradeCount = totalTradeCount / float64(totalDays)
+
+		totalReturn = (endBalance/b.Capital - 1) * 100
+		annualReturn = totalReturn / float64(totalDays) * float64(b.AnnualDays)
+
+		// TODO: dailyReturn, returnStd, dailyRiskFree, sharpeRatio
+
+		returnDrawdownRatio = -totalReturn / maxDdpercent
 	}
-	netPnlSeries := df.Col("NetPnl")
-	balanceSeries := utils.CumSumSeries(netPnlSeries, "Balance", b.Capital)
-	preBalanceSeries := utils.ShiftSeries(balanceSeries, 1, "PreBalance")
-	preBalanceSeries.Set(0, series.New(b.Capital, series.Float, "PreBalance"))
 
-	// TODO: Highlevel
-	balanceSeries.Rolling(1).Mean()
+	b.logger.Println("----------------------")
+	b.logger.Printf("首个交易日:\t%v \n", startDate)
+	b.logger.Printf("最后交易日:\t%v \n", endDate)
 
-	drawdownSeries := utils.SubSeries(balanceSeries, df.Col("Highlevel"), "Drawdown")
-	ddpercentSeries := utils.MutiSeries(utils.DivSeries(drawdownSeries, df.Col("Highlevel"), ""), 100, "ddpercent")
-	startDate = b.Start.Format("2006-01-02")
-	endDate = b.End.Format("2006-01-02")
-	totalDays = balanceSeries.Len()
-	profitDays = utils.GreaterSeries(netPnlSeries, 0)
-	lossDays = utils.LowerSeries(netPnlSeries, 0)
+	b.logger.Printf("总交易日：\t%v \n", totalDays)
+	b.logger.Printf("盈利交易日：\t%v \n", profitDays)
+	b.logger.Printf("亏损交易日：\t%v \n", lossDays)
 
-	endBalance = balanceSeries.Float()[balanceSeries.Len()-1]
-	maxDrawdown = drawdownSeries.Min()
-	maxDdpercent = ddpercentSeries.Min()
+	b.logger.Printf("起始资金：\t%.2f \n", b.Capital)
+	b.logger.Printf("结束资金：\t%.2f \n", endBalance)
 
-	totalNetPnl = netPnlSeries.Sum()
-	dailyNetPnl = totalNetPnl / float64(totalDays)
-	
-	totalCommission = df.Col("Commission").Sum()
-	dailyCommission = totalCommission / float64(totalDays)
+	b.logger.Printf("总收益率：\t%.2f \n", totalReturn)
+	b.logger.Printf("年化收益：\t%.2f \n", annualReturn)
+	b.logger.Printf("最大回撤\t%.2f \n", maxDrawdown)
+	b.logger.Printf("百分比最大回撤\t%.2f \n", maxDdpercent)
+	// b.logger.Printf("最长回撤天数\t%.2f \n", maxDrawdownDuration)
 
-	totalSlippage = df.Col("Slippage").Sum()
-	dailySlippage = totalSlippage / float64(totalDays)
+	b.logger.Printf("总盈亏：\t%.2f \n", totalNetPnl)
+	b.logger.Printf("总手续费：\t%.2f \n", totalCommission)
+	b.logger.Printf("总滑点：\t%.2f \n", totalSlippage)
+	b.logger.Printf("总成交金额：\t%.2f \n", totalTurnover)
+	b.logger.Printf("总成交笔数：\t%v \n", totalTradeCount)
 
-	totalTurnover = df.Col("Turnover").Sum()
-	dailyTurnover = totalTurnover / float64(totalDays)
+	b.logger.Printf("日均盈亏：\t%.2f \n", dailyNetPnl)
+	b.logger.Printf("日均手续费：\t%.2f \n", dailyCommission)
+	b.logger.Printf("日均滑点：\t%.2f \n", dailySlippage)
+	b.logger.Printf("日均成交金额：\t%.2f \n", dailyTurnover)
+	b.logger.Printf("日均成交笔数：\t%v \n", dailyTradeCount)
 
-	totalTradeCount = df.Col("TradeCount").Sum()
-	dailyTradeCount = totalTradeCount / float64(totalDays)
-
-	totalReturn = (endBalance / b.Capital - 1) * 100
-	annualReturn = totalReturn / float64(totalDays) * float64(b.AnnualDays)
-	
-	// TODO: dailyReturn, returnStd, dailyRiskFree, sharpeRatio
-
-	returnDrawdownRatio = -totalReturn / maxDdpercent
-
-	if output {
-		b.logger.Println("----------------------")
-		b.logger.Printf("首个交易日:\t%v \n", startDate)
-		b.logger.Printf("最后交易日:\t%v \n", endDate)
-
-		b.logger.Printf("总交易日：\t%v \n", totalDays)
-		b.logger.Printf("盈利交易日：\t%v \n", profitDays)
-		b.logger.Printf("亏损交易日：\t%v \n", lossDays)
-
-		b.logger.Printf("起始资金：\t%.2f \n", b.Capital)
-		b.logger.Printf("结束资金：\t%.2f \n", endBalance)
-
-		b.logger.Printf("总收益率：\t%.2f \n", totalReturn)
-		b.logger.Printf("年化收益：\t%.2f \n", annualReturn)
-		b.logger.Printf("最大回撤\t%.2f \n", maxDrawdown)
-		b.logger.Printf("百分比最大回撤\t%.2f \n", maxDdpercent)
-		// b.logger.Printf("最长回撤天数\t%.2f \n", maxDrawdownDuration)
-
-		b.logger.Printf("总盈亏：\t%.2f \n", totalNetPnl)
-		b.logger.Printf("总手续费：\t%.2f \n", totalCommission)
-		b.logger.Printf("总滑点：\t%.2f \n", totalSlippage)
-		b.logger.Printf("总成交金额：\t%.2f \n", totalTurnover)
-		b.logger.Printf("总成交笔数：\t%v \n", totalTradeCount)
-
-		b.logger.Printf("日均盈亏：\t%.2f \n", dailyNetPnl)
-		b.logger.Printf("日均手续费：\t%.2f \n", dailyCommission)
-		b.logger.Printf("日均滑点：\t%.2f \n", dailySlippage)
-		b.logger.Printf("日均成交金额：\t%.2f \n", dailyTurnover)
-		b.logger.Printf("日均成交笔数：\t%v \n", dailyTradeCount)
-
-		// b.logger.Printf("日均收益率：\t%.2f \n", dailyReturn)
-		// b.logger.Printf("收益标准差：\t%.2f \n", returnStd)
-		// b.logger.Printf("Sharpe Ratio：\t%.2f \n", sharpeRatio)
-		b.logger.Printf("收益回撤比：\t%.2f \n", returnDrawdownRatio)
-	}
+	// b.logger.Printf("日均收益率：\t%.2f \n", dailyReturn)
+	// b.logger.Printf("收益标准差：\t%.2f \n", returnStd)
+	// b.logger.Printf("Sharpe Ratio：\t%.2f \n", sharpeRatio)
+	b.logger.Printf("收益回撤比：\t%.2f \n", returnDrawdownRatio)
 
 	statistics := map[string]any{
-		"start_date": startDate,
-		"end_date": endDate,
-		"total_days": totalDays,
-		"profit_days": profitDays,
-		"loss_days": lossDays,
-		"capital": b.Capital,
-		"end_balance": endBalance,
-		"max_drawdown": maxDrawdown,
-		"max_ddpercent": maxDdpercent,
+		"start_date":            startDate,
+		"end_date":              endDate,
+		"total_days":            totalDays,
+		"profit_days":           profitDays,
+		"loss_days":             lossDays,
+		"capital":               b.Capital,
+		"end_balance":           endBalance,
+		"max_drawdown":          maxDrawdown,
+		"max_ddpercent":         maxDdpercent,
 		"max_drawdown_duration": maxDrawdownDuration,
-		"total_net_pnl": totalNetPnl,
-		"daily_net_pnl": dailyNetPnl,
-		"total_commission": totalCommission,
-		"daily_commission": dailyCommission,
-		"total_slippage": totalSlippage,
-		"daily_slippage": dailySlippage,
-		"total_turnover": totalTurnover,
-		"daily_turnover": dailyTurnover,
-		"total_trade_count": totalTradeCount,
-		"daily_trade_count": dailyTradeCount,
-		"total_return": totalReturn,
-		"annual_return": annualReturn,
-		"daily_return": dailyReturn,
-		"return_std": returnStd,
-		"sharpe_ratio": sharpeRatio,
+		"total_net_pnl":         totalNetPnl,
+		"daily_net_pnl":         dailyNetPnl,
+		"total_commission":      totalCommission,
+		"daily_commission":      dailyCommission,
+		"total_slippage":        totalSlippage,
+		"daily_slippage":        dailySlippage,
+		"total_turnover":        totalTurnover,
+		"daily_turnover":        dailyTurnover,
+		"total_trade_count":     totalTradeCount,
+		"daily_trade_count":     dailyTradeCount,
+		"total_return":          totalReturn,
+		"annual_return":         annualReturn,
+		"daily_return":          dailyReturn,
+		"return_std":            returnStd,
+		"sharpe_ratio":          sharpeRatio,
 		"return_drawdown_ratio": returnDrawdownRatio,
 	}
 	b.logger.Println("策略统计指标计算完成")
